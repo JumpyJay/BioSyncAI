@@ -138,7 +138,7 @@ class RLMusicAgent:
     """Reinforcement Learning agent for music parameter control."""
     
     def __init__(self, state_space_size=3, action_space_size=4):
-        self.state_space_size = state_space_space_size
+        self.state_space_size = state_space_size
         self.action_space_size = action_space_size
         self.q_table = np.zeros((state_space_size, action_space_size))
         

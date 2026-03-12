@@ -33,10 +33,83 @@
 ## 🚀 Getting Started
 
 ### Prerequisites
-* Raspberry Pi (with OpenClaw/Python 3.x)
+* Raspberry Pi (with Python 3.x)
 * Pulse Sensor (Analog/Digital)
-* `scikit-learn` for SVM implementation
-* `numpy` & `scipy` for signal processing
+* ADC (e.g., MCP3008) if using analog sensor
+
+### Python Version
+This project requires **Python 3.10 or 3.11** (recommended).
+
+#### Setting Up Python with pyenv (Recommended)
+If you need to install or manage multiple Python versions:
+
+```bash
+# Install pyenv (macOS)
+brew install pyenv
+
+# Add to shell config (~/.zshrc or ~/.bashrc)
+echo 'export PATH="$HOME/.pyenv/bin:$PATH"' >> ~/.zshrc
+echo 'eval "$(pyenv init -)"' >> ~/.zshrc
+source ~/.zshrc
+
+# Install Python 3.11
+pyenv install 3.11.0
+
+# Set local Python version for this project
+pyenv local 3.11.0
+
+# Verify
+python --version
+```
+
+### Installation
+
+1. **Create and activate virtual environment:**
+   ```bash
+   # Create venv
+   python -m venv venv
+   
+   # Activate (macOS/Linux)
+   source venv/bin/activate
+   
+   # Activate (Windows)
+   # venv\Scripts\activate
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Running the Code
+
+```bash
+# Activate venv first (if not already activated)
+source venv/bin/activate
+
+# Run the biofeedback system
+python biofeedback_system.py
+```
+
+### Hardware Setup (Optional)
+For real hardware integration:
+- Wire MCP3008 ADC to Raspberry Pi SPI pins
+- Connect pulse sensor to ADC channel 0
+- Install `spidev` for ADC communication
+
+### Project Structure
+```
+BioSyncAI/
+├── biofeedback_system.py   # Main system code
+├── requirements.txt        # Python dependencies
+├── README.md              # This file
+└── .gitignore            # Git ignore rules
+```
+
+### Dependencies
+- `numpy` - Numerical computing
+- `scikit-learn` - SVM implementation
+- `scipy` - Signal processing
 
 ### Implementation Notes
 * [cite_start]**Edge Cases:** The system includes personalized calibration to handle baseline distributions and avoid misclassifying pathological irregularities like arrhythmia[cite: 84, 85].
