@@ -137,8 +137,8 @@ class CognitiveStateClassifier:
 class RLMusicAgent:
     """Reinforcement Learning agent for music parameter control."""
     
-    def __init__(self, state_space_size=3, action_space_size=4):
-        self.state_space_size = state_space_space_size
+    def __init__(self, state_space_size=4, action_space_size=4):
+        self.state_space_size = state_space_size
         self.action_space_size = action_space_size
         self.q_table = np.zeros((state_space_size, action_space_size))
         
@@ -151,6 +151,10 @@ class RLMusicAgent:
         
         # Target HRV for "Flow" state
         self.target_rmssd = 50.0
+
+        # Memory for Q-learning updates
+        self.last_state = None
+        self.last_action_idx = None
     
     def state_from_hrv(self, rmssd):
         """Discretize HRV into state bins."""
@@ -189,14 +193,20 @@ class RLMusicAgent:
         )
     
     def act(self, current_rmssd, previous_rmssd):
-        """Main RL decision loop."""
-        state = self.state_from_hrv(current_rmssd)
-        action_idx = self.select_action(state)
+        """Main RL decision loop with state tracking."""
+        current_state = self.state_from_hrv(current_rmssd)
         
-        reward = self.get_reward(current_rmssd, previous_rmssd)
+        # Update Q-table based on the transition from the previous iteration
+        if self.last_state is not None and self.last_action_idx is not None:
+            reward = self.get_reward(current_rmssd, previous_rmssd)
+            self.update_q_table(self.last_state, self.last_action_idx, reward, current_state)
         
-        next_state = state  # Would be derived from next observation
-        self.update_q_table(state, action_idx, reward, next_state)
+        # Select next action
+        action_idx = self.select_action(current_state)
+        
+        # Store for next iteration
+        self.last_state = current_state
+        self.last_action_idx = action_idx
         
         return self.actions[action_idx]
 
