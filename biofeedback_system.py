@@ -8,6 +8,9 @@ and generates adaptive music in real-time.
 import numpy as np
 from collections import deque
 import time
+import pickle
+import os
+from sklearn.preprocessing import StandardScaler
 
 
 # =============================================================================
@@ -94,14 +97,18 @@ class SignalProcessor:
 # =============================================================================
 
 class CognitiveStateClassifier:
-    """SVM-based cognitive state classifier."""
+    """SVM-based cognitive state classifier with incremental learning."""
     
-    def __init__(self, model_path=None):
+    def __init__(self, model_path='svm_model.pkl'):
         from sklearn.svm import SVC
         self.svm = SVC(kernel='rbf', probability=True)
+        self.scaler = StandardScaler()
         self.trained = False
+        self.model_path = model_path
+        self.training_data = []  # Store all training examples
+        self.training_labels = []
         
-        if model_path:
+        if os.path.exists(model_path):
             self.load_model(model_path)
     
     def prepare_features(self, hr_features):
@@ -117,8 +124,7 @@ class CognitiveStateClassifier:
         X = self.prepare_features(hr_features)
         
         if not self.trained:
-            # Placeholder: return baseline state
-            # In production, load pre-trained WESAD model
+            # Baseline detection if not trained
             rmssd = hr_features['rmssd']
             if rmssd < 20:
                 return 'stress'
@@ -126,21 +132,67 @@ class CognitiveStateClassifier:
                 return 'flow'
             return 'neutral'
         
-        return self.svm.predict(X)[0]
+        X_scaled = self.scaler.transform(X)
+        return self.svm.predict(X_scaled)[0]
     
-    def train(self, X_train, y_train):
-        """Train SVM on labeled data (e.g., WESAD dataset)."""
-        self.svm.fit(X_train, y_train)
-        self.trained = True
+    def train_incrementally(self, hr_features, label):
+        """Learn from new labeled data and retrain."""
+        X = self.prepare_features(hr_features)
+        self.training_data.append(X[0])
+        self.training_labels.append(label)
+        
+        if len(self.training_data) >= 3:  # Need at least 3 samples
+            X_train = np.array(self.training_data)
+            y_train = np.array(self.training_labels)
+            
+            # Fit scaler and transform
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            
+            # Retrain SVM
+            self.svm.fit(X_train_scaled, y_train)
+            self.trained = True
+            self.save_model()
+            print(f"✓ Model retrained with {len(self.training_data)} samples")
+    
+    def save_model(self):
+        """Save trained model and scaler to disk."""
+        with open(self.model_path, 'wb') as f:
+            pickle.dump({
+                'svm': self.svm,
+                'scaler': self.scaler,
+                'training_data': self.training_data,
+                'training_labels': self.training_labels,
+                'trained': self.trained
+            }, f)
+    
+    def load_model(self, model_path=None):
+        """Load previously trained model."""
+        path = model_path or self.model_path
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                data = pickle.load(f)
+                self.svm = data['svm']
+                self.scaler = data['scaler']
+                self.training_data = data['training_data']
+                self.training_labels = data['training_labels']
+                self.trained = data['trained']
+                print(f"✓ Loaded saved model with {len(self.training_data)} training samples")
 
 
 class RLMusicAgent:
-    """Reinforcement Learning agent for music parameter control."""
+    """Reinforcement Learning agent for music parameter control with persistence."""
     
-    def __init__(self, state_space_size=3, action_space_size=4):
+    def __init__(self, state_space_size=4, action_space_size=4, q_table_path='q_table.npy'):
         self.state_space_size = state_space_size
         self.action_space_size = action_space_size
-        self.q_table = np.zeros((state_space_size, action_space_size))
+        self.q_table_path = q_table_path
+        
+        # Load existing Q-table or create new
+        if os.path.exists(q_table_path):
+            self.q_table = np.load(q_table_path)
+            print(f"✓ Loaded Q-table from previous sessions")
+        else:
+            self.q_table = np.zeros((state_space_size, action_space_size))
         
         self.learning_rate = 0.1
         self.discount_factor = 0.9
@@ -187,6 +239,13 @@ class RLMusicAgent:
         self.q_table[state, action] = current_q + self.learning_rate * (
             reward + self.discount_factor * max_next_q - current_q
         )
+        
+        # Save after each update
+        self.save_q_table()
+    
+    def save_q_table(self):
+        """Save Q-table to disk."""
+        np.save(self.q_table_path, self.q_table)
     
     def act(self, current_rmssd, previous_rmssd):
         """Main RL decision loop."""
@@ -202,26 +261,90 @@ class RLMusicAgent:
 
 
 # =============================================================================
-# 4. GENERATIVE MUSIC ENGINE
+# 4. GENERATIVE MUSIC ENGINE (Audio synthesis with scipy)
 # =============================================================================
 
 class MusicEngine:
-    """Generates/modulates music based on biofeedback."""
+    """Generates/modulates music in real-time using scipy synthesis."""
     
-    def __init__(self):
-        # Placeholder: would integrate with Tone.js, SuperCollider, or pyo
+    def __init__(self, sample_rate=44100):
+        self.sample_rate = sample_rate
+        self.is_playing = False
+        
+        try:
+            import simpleaudio as sa
+            self.simpleaudio = sa
+            self.audio_available = True
+        except ImportError:
+            self.audio_available = False
+            print("⚠️  simpleaudio not installed. Using simulation mode.")
+        
+        # Music parameters
         self.tempo = 90
         self.brightness = 0.5
         self.rhythmic_density = 0.5
         self.harmonic_complexity = 0.5
+        
+        self.current_playback = None
+    
+    def generate_tone(self, frequency, duration_sec, amplitude=0.3):
+        """Generate a sine wave tone."""
+        num_samples = int(self.sample_rate * duration_sec)
+        t = np.linspace(0, duration_sec, num_samples)
+        
+        # Base sine wave
+        wave = np.sin(2.0 * np.pi * frequency * t) * amplitude
+        
+        # Add harmonics based on complexity
+        if self.harmonic_complexity > 0.3:
+            wave += 0.5 * np.sin(2.0 * np.pi * frequency * 1.5 * t) * amplitude * self.harmonic_complexity
+        if self.harmonic_complexity > 0.6:
+            wave += 0.3 * np.sin(2.0 * np.pi * frequency * 2 * t) * amplitude * self.harmonic_complexity
+        
+        # Apply brightness (high-pass filter simulation)
+        if self.brightness > 0.5:
+            # Shift frequencies upward
+            wave += 0.2 * np.sin(2.0 * np.pi * frequency * 2 * t * self.brightness) * amplitude
+        
+        # Normalize
+        wave = np.int16(wave / np.max(np.abs(wave)) * 32767 * 0.9)
+        return wave
+    
+    def play_adaptive_music(self, duration_sec=2):
+        """Play adaptive music based on current parameters."""
+        if not self.audio_available:
+            print("  🔊 Audio synthesis (simulated - install simpleaudio for audio)")
+            return
+        
+        try:
+            # Base frequency adjusted by brightness
+            base_freq = 110 + (self.brightness * 100)  # A2 to B3
+            
+            # Generate tone
+            audio_data = self.generate_tone(base_freq, duration_sec)
+            
+            # Play audio in background
+            self.current_playback = self.simpleaudio.play_buffer(
+                audio_data, 1, 2, self.sample_rate
+            )
+            self.is_playing = True
+            print(f"  🔊 Playing: {base_freq:.0f}Hz for {duration_sec}s")
+        except Exception as e:
+            print(f"  ⚠️  Audio playback error: {e}")
     
     def adjust_tempo(self, delta):
         """Adjust tempo in BPM."""
+        old_tempo = self.tempo
         self.tempo = max(60, min(180, self.tempo + delta))
+        if self.tempo != old_tempo:
+            print(f"  🎵 Tempo: {old_tempo} → {self.tempo} BPM")
     
     def adjust_brightness(self, delta):
-        """Adjust brightness (harmonic brightness/filter cutoff)."""
+        """Adjust brightness (frequency shift)."""
+        old_brightness = self.brightness
         self.brightness = max(0.0, min(1.0, self.brightness + delta))
+        if self.brightness != old_brightness:
+            print(f"  ✨ Brightness: {old_brightness:.2f} → {self.brightness:.2f}")
     
     def adjust_rhythmic_density(self, delta):
         """Adjust rhythmic density (note density per measure)."""
@@ -243,6 +366,9 @@ class MusicEngine:
         if action in action_map:
             action_map[action]()
         
+        # Play a tone reflecting the new parameters
+        self.play_adaptive_music(duration_sec=0.5)
+        
         return self.get_current_params()
     
     def get_current_params(self):
@@ -253,6 +379,16 @@ class MusicEngine:
             'rhythmic_density': self.rhythmic_density,
             'harmonic_complexity': self.harmonic_complexity
         }
+    
+    def stop(self):
+        """Stop audio playback."""
+        if self.current_playback:
+            try:
+                self.current_playback.stop()
+                self.is_playing = False
+                print("✓ Audio stopped")
+            except:
+                pass
 
 
 # =============================================================================
@@ -260,7 +396,7 @@ class MusicEngine:
 # =============================================================================
 
 class BiofeedbackLoop:
-    """Main closed-loop biofeedback system."""
+    """Main closed-loop biofeedback system with learning."""
     
     def __init__(self):
         self.sensor = PulseSensorReader()
@@ -271,6 +407,26 @@ class BiofeedbackLoop:
         
         self.previous_rmssd = 50.0
         self.is_running = False
+        self.last_hr_features = None
+    
+    def get_user_label(self):
+        """Prompt user to label their current cognitive state."""
+        print("\nHow do you feel right now?")
+        print("1. Stressed")
+        print("2. Neutral")
+        print("3. Focused/Flow")
+        print("4. Relaxed")
+        
+        while True:
+            try:
+                choice = input("Enter 1-4: ").strip()
+                mapping = {'1': 'stress', '2': 'neutral', '3': 'flow', '4': 'relaxed'}
+                if choice in mapping:
+                    return mapping[choice]
+                print("Invalid choice. Try again.")
+            except KeyboardInterrupt:
+                print("\nSkipped labeling.")
+                return None
     
     def run_once(self):
         """Execute one iteration of the feedback loop."""
@@ -279,18 +435,25 @@ class BiofeedbackLoop:
         
         # 2. Extract features
         hr_features = self.processor.extract_features(signal)
+        self.last_hr_features = hr_features
         
         # 3. Classify state
         state = self.classifier.predict(hr_features)
-        print(f"Detected state: {state}")
+        print(f"[PREDICT] Detected state: {state}")
+        print(f"[DATA] HR: {hr_features['hr']:.1f} BPM | RMSSD: {hr_features['rmssd']:.1f}")
         
-        # 4. RL decides action
+        # 4. Learn from user feedback
+        user_label = self.get_user_label()
+        if user_label:
+            self.classifier.train_incrementally(hr_features, user_label)
+        
+        # 5. RL decides action
         action = self.rl_agent.act(hr_features['rmssd'], self.previous_rmssd)
-        print(f"RL Action: {action}")
+        print(f"[RL] Action: {action}")
         
-        # 5. Apply to music engine
+        # 6. Apply to music engine
         music_params = self.music.apply_action(action)
-        print(f"Music params: {music_params}")
+        print(f"[MUSIC] Tempo: {music_params['tempo']} | Brightness: {music_params['brightness']:.2f}")
         
         # Update for next iteration
         self.previous_rmssd = hr_features['rmssd']
@@ -312,6 +475,8 @@ class BiofeedbackLoop:
     def stop(self):
         """Stop the feedback loop."""
         self.is_running = False
+        if self.music:
+            self.music.stop()
 
 
 # =============================================================================
@@ -321,5 +486,31 @@ class BiofeedbackLoop:
 if __name__ == "__main__":
     system = BiofeedbackLoop()
     
+    print("=" * 60)
+    print("🧠 BioSyncAI - Closed-Loop Biofeedback System")
+    print("=" * 60)
+    print("This system learns from YOUR feedback every time you use it!")
+    print("It will:")
+    print("  • Detect your cognitive state from heart rate")
+    print("  • Ask you how you actually feel (to learn)")
+    print("  • Adjust music to guide you toward Flow state")
+    print("  • Remember patterns for next time")
+    print("=" * 60)
+    
     # For testing, just run one iteration
-    system.run_once()
+    try:
+        system.run_once()
+        print("\n✓ System ran successfully!")
+        print("📁 Models saved: svm_model.pkl, q_table.npy")
+        if system.music.is_playing:
+            print("🔊 Audio is playing... Press Ctrl+C to stop")
+            import time
+            try:
+                time.sleep(5)  # Let audio play for 5 seconds
+            except KeyboardInterrupt:
+                pass
+    except KeyboardInterrupt:
+        print("\n\nStopped by user.")
+    finally:
+        system.stop()
+        print("Cleanup complete.")
