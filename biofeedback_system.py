@@ -265,7 +265,7 @@ class RLMusicAgent:
         
         reward = self.get_reward(current_rmssd, previous_rmssd)
         
-        next_state = state  # Would be derived from next observation
+        next_state = self.state_from_hrv(previous_rmssd)
         self.update_q_table(state, action_idx, reward, next_state)
         
         return self.actions[action_idx]
