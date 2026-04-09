@@ -31,13 +31,24 @@ class PulseSensorReader:
         # return self.read_adc(self.adc_channel)
         return np.random.uniform(0.5, 3.3)  # Simulated for testing
     
-    def get_signal_buffer(self, duration_sec=10):
+    def get_signal_buffer(self, duration_sec=10, fast_mode=False):
         """Collect signal for specified duration."""
         samples_needed = self.sample_rate * duration_sec
         signal = []
-        while len(signal) < samples_needed:
+        
+        # Fast mode: skip sleep delays for testing
+        sleep_time = 0 if fast_mode else (1 / self.sample_rate)
+        
+        for i in range(samples_needed):
             signal.append(self.read_raw())
-            time.sleep(1 / self.sample_rate)
+            if not fast_mode:
+                time.sleep(sleep_time)
+            # Show progress every 500 samples
+            if (i + 1) % 500 == 0:
+                print(f"  📊 Collecting signal: {i + 1}/{samples_needed} samples...", end='\r')
+        
+        if samples_needed > 0:
+            print(f"  ✓ Signal collected: {samples_needed} samples           ")
         return np.array(signal)
 
 
@@ -311,23 +322,151 @@ class MusicEngine:
         audio_data = np.int16(wave * 32767)
         return audio_data
     
+    def generate_adaptive_music(self, duration_sec=10):
+        """Generate longer, evolving adaptive music (5-10 seconds)."""
+        num_samples = int(self.sample_rate * duration_sec)
+        t = np.linspace(0, duration_sec, num_samples)
+        
+        # Base frequency varies with brightness (dynamic pitch range)
+        base_freq = 100 + (self.brightness * 120)  # 100-220 Hz range
+        
+        # Add subtle frequency modulation (vibrato effect)
+        vibrato_rate = 5 + (self.harmonic_complexity * 10)  # 5-15 Hz
+        freq_variation = base_freq * (0.98 + 0.02 * np.sin(2 * np.pi * vibrato_rate * t))
+        
+        # Main melody with evolving frequency
+        wave = np.sin(2.0 * np.pi * freq_variation * t) * 0.3
+        
+        # Add chord structure (3 voices with harmonic relationship)
+        if self.harmonic_complexity > 0.4:
+            # 5th harmonic
+            wave += 0.2 * np.sin(2.0 * np.pi * (base_freq * 1.5) * t) * self.harmonic_complexity
+            # Octave
+            wave += 0.15 * np.sin(2.0 * np.pi * (base_freq * 2) * t) * self.harmonic_complexity
+        
+        # Brightness affects high-frequency content
+        if self.brightness > 0.5:
+            high_freq_component = (self.brightness - 0.5) * 2  # 0-1 range
+            wave += 0.1 * high_freq_component * np.sin(2.0 * np.pi * (base_freq * 3.5) * t)
+        
+        # Add gentle amplitude envelope (fade in/out for smooth listening)
+        envelope = np.ones_like(t)
+        fade_samples = int(self.sample_rate * 0.5)  # 0.5 sec fade
+        envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
+        envelope[-fade_samples:] = np.linspace(1, 0, fade_samples)
+        wave *= envelope
+        
+        # Normalize
+        max_val = np.max(np.abs(wave))
+        if max_val > 0:
+            wave = wave / max_val * 0.85
+        
+        # Convert to int16
+        audio_data = np.int16(wave * 32767)
+        return audio_data
+    
+    def generate_binaural_beats(self, duration_sec=10, target_hz=10):
+        """Generate binaural beats for inducing specific brain states.
+        
+        Args:
+            duration_sec: Length of audio
+            target_hz: Target brainwave frequency
+                - 40 Hz: Focus/Flow state
+                - 10-14 Hz: Relaxed alertness  
+                - 7-10 Hz: Deep relaxation
+                - 4-7 Hz: Meditation
+        """
+        num_samples = int(self.sample_rate * duration_sec)
+        t = np.linspace(0, duration_sec, num_samples)
+        
+        # Left ear: base frequency
+        left_freq = 200
+        # Right ear: base + target beat frequency (creates binaural effect)
+        right_freq = left_freq + target_hz
+        
+        # Generate stereo binaural beats
+        left_channel = np.sin(2.0 * np.pi * left_freq * t) * 0.2
+        right_channel = np.sin(2.0 * np.pi * right_freq * t) * 0.2
+        
+        # Add ambient pad (smooth background harmonics)
+        ambient_freq = 110  # Base note
+        ambient = 0.15 * (
+            np.sin(2.0 * np.pi * ambient_freq * t) +
+            0.5 * np.sin(2.0 * np.pi * ambient_freq * 1.5 * t) +
+            0.3 * np.sin(2.0 * np.pi * ambient_freq * 2 * t)
+        )
+        
+        # Combine: binaural beats + ambient pad
+        left_channel += ambient
+        right_channel += ambient
+        
+        # Smooth fade in/out
+        envelope = np.ones_like(t)
+        fade_samples = int(self.sample_rate * 1.0)  # 1 sec fade
+        envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
+        envelope[-fade_samples:] = np.linspace(1, 0, fade_samples)
+        
+        left_channel *= envelope
+        right_channel *= envelope
+        
+        # Normalize both channels
+        max_val = max(np.max(np.abs(left_channel)), np.max(np.abs(right_channel)))
+        if max_val > 0:
+            left_channel = left_channel / max_val * 0.8
+            right_channel = right_channel / max_val * 0.8
+        
+        # Combine into stereo
+        stereo_audio = np.column_stack((left_channel, right_channel))
+        audio_data = np.int16(stereo_audio * 32767)
+        
+        return audio_data
+    
     def save_tone(self, filename_prefix="tone"):
-        """Generate and save tone as WAV file."""
+        """Generate and save binaural beats + ambient music."""
         try:
-            # Base frequency adjusted by brightness
-            base_freq = 110 + (self.brightness * 100)  # A2 to B3
+            # Determine target frequency based on HRV state
+            rmssd_estimate = 50  # Default (would come from actual HRV in real use)
             
-            # Generate tone
-            audio_data = self.generate_tone(base_freq, duration_sec=1.0)
+            if self.brightness < 0.3:
+                # Stressed: use 40 Hz (focus/alerting)
+                target_hz = 40
+                state = "Alert/Focus"
+            elif self.brightness < 0.6:
+                # Moderate: use 14 Hz (focused calm)
+                target_hz = 14
+                state = "Focused Calm"
+            else:
+                # Relaxed: use 10 Hz (deep relaxation)
+                target_hz = 10
+                state = "Deep Relaxation"
             
-            # Save to file
+            print(f"  🎵 Generating binaural beats ({state}, {target_hz}Hz)...")
+            
+            # Generate binaural + ambient music
+            audio_data = self.generate_binaural_beats(duration_sec=10, target_hz=target_hz)
+            
+            # Save to file (stereo)
             filepath = os.path.join(self.audio_dir, f"{filename_prefix}.wav")
             self.wavfile.write(filepath, self.sample_rate, audio_data)
             
-            print(f"  🔊 Generated: {base_freq:.0f}Hz → {filepath}")
+            print(f"  ✨ Binaural profile: {state} | Brightness: {self.brightness:.2f}")
+            print(f"  🔊 Saved: {filepath}")
+            
+            # Auto-play
+            try:
+                abs_path = os.path.abspath(filepath)
+                if os.name == 'nt':  # Windows
+                    import subprocess
+                    subprocess.Popen(['start', abs_path], shell=True)
+                    print(f"  ▶️  Playing binaural beats + ambient (10 seconds)...")
+            except Exception as e:
+                pass
+            
             return filepath
         except Exception as e:
             print(f"  ⚠️  Could not generate audio: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def adjust_tempo(self, delta):
@@ -420,10 +559,10 @@ class BiofeedbackLoop:
                 print("\nSkipped labeling.")
                 return None
     
-    def run_once(self):
+    def run_once(self, fast_mode=False):
         """Execute one iteration of the feedback loop."""
         # 1. Acquire signal
-        signal = self.sensor.get_signal_buffer(duration_sec=30)
+        signal = self.sensor.get_signal_buffer(duration_sec=30, fast_mode=fast_mode)
         
         # 2. Extract features
         hr_features = self.processor.extract_features(signal)

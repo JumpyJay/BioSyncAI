@@ -9,16 +9,37 @@ venv/
 env/
 ENV/
 .env
+
 # IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
+
 # OS
 .DS_Store
 Thumbs.db
+
 # Project specific
 data/
 *.csv
 *.hdf5
-models/*.pkl
+
+# Local training data (user-specific, should NOT be committed)
+q_table.npy
+svm_model.pkl
+*.pkl
+*.npy
+
+# Generated audio files (local only)
+biofeedback_audio/
+biofeedback_audio_test/
+*.wav
+
+# Test artifacts
+.pytest_cache/
+.coverage
+
+# Logs
+*.log
+logs/
