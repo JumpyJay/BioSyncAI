@@ -261,31 +261,28 @@ class RLMusicAgent:
 
 
 # =============================================================================
-# 4. GENERATIVE MUSIC ENGINE (Audio synthesis with scipy)
+# 4. GENERATIVE MUSIC ENGINE (Pure Python audio synthesis)
 # =============================================================================
 
 class MusicEngine:
-    """Generates/modulates music in real-time using scipy synthesis."""
+    """Generates/modulates music in real-time using pure Python synthesis."""
     
     def __init__(self, sample_rate=44100):
+        from scipy.io import wavfile
+        self.wavfile = wavfile
         self.sample_rate = sample_rate
         self.is_playing = False
+        self.audio_dir = "biofeedback_audio"
         
-        try:
-            import simpleaudio as sa
-            self.simpleaudio = sa
-            self.audio_available = True
-        except ImportError:
-            self.audio_available = False
-            print("⚠️  simpleaudio not installed. Using simulation mode.")
+        # Create audio directory if it doesn't exist
+        if not os.path.exists(self.audio_dir):
+            os.makedirs(self.audio_dir)
         
         # Music parameters
         self.tempo = 90
         self.brightness = 0.5
         self.rhythmic_density = 0.5
         self.harmonic_complexity = 0.5
-        
-        self.current_playback = None
     
     def generate_tone(self, frequency, duration_sec, amplitude=0.3):
         """Generate a sine wave tone."""
@@ -301,36 +298,37 @@ class MusicEngine:
         if self.harmonic_complexity > 0.6:
             wave += 0.3 * np.sin(2.0 * np.pi * frequency * 2 * t) * amplitude * self.harmonic_complexity
         
-        # Apply brightness (high-pass filter simulation)
+        # Apply brightness (frequency enhancement)
         if self.brightness > 0.5:
-            # Shift frequencies upward
-            wave += 0.2 * np.sin(2.0 * np.pi * frequency * 2 * t * self.brightness) * amplitude
+            wave += 0.2 * np.sin(2.0 * np.pi * frequency * 2.5 * t * self.brightness) * amplitude
         
-        # Normalize
-        wave = np.int16(wave / np.max(np.abs(wave)) * 32767 * 0.9)
-        return wave
+        # Normalize to prevent clipping
+        max_val = np.max(np.abs(wave))
+        if max_val > 0:
+            wave = wave / max_val * 0.9
+        
+        # Convert to int16 for WAV format
+        audio_data = np.int16(wave * 32767)
+        return audio_data
     
-    def play_adaptive_music(self, duration_sec=2):
-        """Play adaptive music based on current parameters."""
-        if not self.audio_available:
-            print("  🔊 Audio synthesis (simulated - install simpleaudio for audio)")
-            return
-        
+    def save_tone(self, filename_prefix="tone"):
+        """Generate and save tone as WAV file."""
         try:
             # Base frequency adjusted by brightness
             base_freq = 110 + (self.brightness * 100)  # A2 to B3
             
             # Generate tone
-            audio_data = self.generate_tone(base_freq, duration_sec)
+            audio_data = self.generate_tone(base_freq, duration_sec=1.0)
             
-            # Play audio in background
-            self.current_playback = self.simpleaudio.play_buffer(
-                audio_data, 1, 2, self.sample_rate
-            )
-            self.is_playing = True
-            print(f"  🔊 Playing: {base_freq:.0f}Hz for {duration_sec}s")
+            # Save to file
+            filepath = os.path.join(self.audio_dir, f"{filename_prefix}.wav")
+            self.wavfile.write(filepath, self.sample_rate, audio_data)
+            
+            print(f"  🔊 Generated: {base_freq:.0f}Hz → {filepath}")
+            return filepath
         except Exception as e:
-            print(f"  ⚠️  Audio playback error: {e}")
+            print(f"  ⚠️  Could not generate audio: {e}")
+            return None
     
     def adjust_tempo(self, delta):
         """Adjust tempo in BPM."""
@@ -366,8 +364,8 @@ class MusicEngine:
         if action in action_map:
             action_map[action]()
         
-        # Play a tone reflecting the new parameters
-        self.play_adaptive_music(duration_sec=0.5)
+        # Generate audio file reflecting new parameters
+        self.save_tone(f"adaptive_{int(time.time())}")
         
         return self.get_current_params()
     
@@ -381,14 +379,8 @@ class MusicEngine:
         }
     
     def stop(self):
-        """Stop audio playback."""
-        if self.current_playback:
-            try:
-                self.current_playback.stop()
-                self.is_playing = False
-                print("✓ Audio stopped")
-            except:
-                pass
+        """Cleanup."""
+        pass
 
 
 # =============================================================================
