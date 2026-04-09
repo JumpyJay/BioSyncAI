@@ -10,6 +10,7 @@ from collections import deque
 import time
 import pickle
 import os
+import tempfile
 from sklearn.preprocessing import StandardScaler
 
 
@@ -422,21 +423,18 @@ class MusicEngine:
         return audio_data
 
     def save_tone(self, filename_prefix="tone"):
-        """Generate and save binaural beats + ambient music."""
+        """Generate and save binaural beats + ambient music to temp file, then play & auto-delete."""
         try:
             # Determine target frequency based on HRV state
             rmssd_estimate = 50  # Default (would come from actual HRV in real use)
 
             if self.brightness < 0.3:
-                # Stressed: use 40 Hz (focus/alerting)
                 target_hz = 40
                 state = "Alert/Focus"
             elif self.brightness < 0.6:
-                # Moderate: use 14 Hz (focused calm)
                 target_hz = 14
                 state = "Focused Calm"
             else:
-                # Relaxed: use 10 Hz (deep relaxation)
                 target_hz = 10
                 state = "Deep Relaxation"
 
@@ -458,7 +456,14 @@ class MusicEngine:
                 if os.name == 'nt':  # Windows
                     import subprocess
                     subprocess.Popen(['start', abs_path], shell=True)
-                    print(f"  ▶️  Playing binaural beats + ambient (10 seconds)...")
+                    
+                    # Wait for playback to finish, then delete temp file
+                    time.sleep(11)  # 10 sec audio + 1 sec buffer
+                    try:
+                        os.remove(filepath)
+                        print(f"  ✓ Temp file cleaned up")
+                    except:
+                        pass  # File might still be in use
             except Exception as e:
                 pass
 
