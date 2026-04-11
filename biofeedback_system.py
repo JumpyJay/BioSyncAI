@@ -546,7 +546,7 @@ class MusicEngine:
         return {"state": target_state, "track": None}
 
     def _play_file(self, filepath):
-        """Play an audio file using the OS default player (blocks until done)."""
+        """Play an audio file using the OS default player (non-blocking; returns immediately)."""
         try:
             abs_path = os.path.abspath(filepath)
             if os.name == "nt":  # Windows
