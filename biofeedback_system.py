@@ -663,10 +663,10 @@ class MusicEngine:
 class BiofeedbackLoop:
     """Main closed-loop biofeedback system with 9-quadrant SVM + RL playlist."""
 
-    # Valid 9-quadrant labels
+    # Valid labels accepted from get_user_label() for incremental learning
     VALID_LABELS = [
         "anxiety", "arousal", "flow", "control", "relaxation",
-        "boredom", "apathy", "worry", "neutral",
+        "boredom", "apathy", "worry", "neutral", "panic",
     ]
 
     def __init__(self):
