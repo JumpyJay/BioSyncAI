@@ -70,7 +70,7 @@ class SignalProcessor:
         self.sample_rate = sample_rate
         self.calibration_window_sec = calibration_window_sec
         self.personalized_baseline_rmssd = None
-        self.baseline_rmssd_window = deque(maxlen=calibration_window_sec * sample_rate // 1000)
+        self.baseline_rmssd_window = deque(maxlen=calibration_window_sec * sample_rate)
         self.hr_history = deque(maxlen=30)  # rolling HR for delta computation
         self.is_calibrated = False
 
@@ -574,7 +574,7 @@ class MusicEngine:
         return {"state": target_state, "track": None}
 
     def _play_file(self, filepath):
-        """Play an audio file using the OS default player (blocks until done)."""
+        """Play an audio file using the OS default player (non-blocking; returns immediately)."""
         try:
             abs_path = os.path.abspath(filepath)
             if os.name == "nt":  # Windows
@@ -691,10 +691,10 @@ class MusicEngine:
 class BiofeedbackLoop:
     """Main closed-loop biofeedback system with 9-quadrant SVM + RL playlist."""
 
-    # Valid 9-quadrant labels
+    # Valid labels accepted from get_user_label() for incremental learning
     VALID_LABELS = [
         "anxiety", "arousal", "flow", "control", "relaxation",
-        "boredom", "apathy", "worry", "neutral",
+        "boredom", "apathy", "worry", "neutral", "panic",
     ]
 
     def __init__(self):
