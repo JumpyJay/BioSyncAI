@@ -63,10 +63,9 @@ def analyse_track(filepath: str) -> dict:
         np.clip((unique_pitch_ratio * 0.5 + entropy_norm * 0.5), 0, 1)
     )
 
-    # --- Valence (crude estimate from spectral features) ---
-    # High brightness + low energy in low freqs → positive; inverse → negative
-    spectral_flatness = librosa.feature.spectral_flatness(y=y).mean()
-    energy_low = y[: int(sr * 0.2)].var()  # low-frequency energy
+    # --- Valence (crude estimate from brightness and low-frequency energy) ---
+    # High brightness + low low-frequency ratio → positive; inverse → negative
+    energy_low = y[: int(sr * 0.2)].var()  # proxy used by the existing heuristic
     energy_total = y.var() + 1e-8
     low_freq_ratio = energy_low / energy_total
 
