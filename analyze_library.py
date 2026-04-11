@@ -29,15 +29,24 @@ AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".m4a")
 def analyse_track(filepath: str) -> dict:
     """Extract musical attributes from a single audio file using librosa."""
     import librosa
+    import scipy.signal as sp_signal
 
     # Load at 22.05 kHz for speed, keep mono
-    y, sr = librosa.load(filepath, sr=22050, mono=True)
+    # allow_press_error=False suppresses the flood of stderr messages from libmpg123
+    # on corrupt MPEG headers; we handle decode failures gracefully instead
+    try:
+        y, sr = librosa.load(filepath, sr=22050, mono=True, duration=600)
+    except Exception as exc:
+        raise RuntimeError(f"audio decode failed ({exc})") from exc
 
-    duration = librosa.get_duration(y=y, sr=sr)
+    if y.size == 0:
+        raise RuntimeError("decoded audio is empty")
+
+    duration = float(librosa.get_duration(y=y, sr=sr))
 
     # --- Tempo (BPM) ---
     tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-    tempo = float(tempo)
+    tempo = float(np.ravel(tempo)[0])  # ensure scalar
 
     # --- Spectral Brightness (treble content) ---
     # Spectral centroid: high = bright, low = dark
@@ -66,8 +75,6 @@ def analyse_track(filepath: str) -> dict:
     # --- Valence (crude estimate from spectral features) ---
     # High brightness + relatively more high-frequency energy → positive;
     # low brightness + relatively more low-frequency energy → negative
-    import scipy.signal as sp_signal
-
     # Low-pass filter at 500 Hz to isolate low-frequency signal content
     nyq = sr / 2
     low_cutoff = min(500, nyq - 1)
