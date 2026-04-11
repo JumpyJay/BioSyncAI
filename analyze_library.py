@@ -64,10 +64,18 @@ def analyse_track(filepath: str) -> dict:
     )
 
     # --- Valence (crude estimate from spectral features) ---
-    # High brightness + low energy in low freqs → positive; inverse → negative
-    spectral_flatness = librosa.feature.spectral_flatness(y=y).mean()
-    energy_low = y[: int(sr * 0.2)].var()  # low-frequency energy
-    energy_total = y.var() + 1e-8
+    # High brightness + relatively more high-frequency energy → positive;
+    # low brightness + relatively more low-frequency energy → negative
+    import scipy.signal as sp_signal
+
+    # Low-pass filter at 500 Hz to isolate low-frequency signal content
+    nyq = sr / 2
+    low_cutoff = min(500, nyq - 1)
+    b, a = sp_signal.butter(4, low_cutoff / nyq, btype="low")
+    y_low = sp_signal.filtfilt(b, a, y)
+
+    energy_low = np.mean(y_low**2)       # actual low-freq signal energy
+    energy_total = np.mean(y**2) + 1e-8  # total signal energy
     low_freq_ratio = energy_low / energy_total
 
     if brightness > 0.55 and low_freq_ratio < 0.4:

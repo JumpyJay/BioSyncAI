@@ -1,20 +1,25 @@
 """
 WESAD Dataset Loader
 ====================
-Downloads (if needed), parses, and preprocesses the WESAD dataset.
+Parses and preprocesses a locally-downloaded copy of the WESAD dataset.
 
 WESAD: Wearable Stress and Affect Detection
 - Schmidt et al., 2018
-- Download: https://zenodo.org/records/被动1010249 (sign-up required)
+- Download: https://www.kaggle.com/datasets/orvile/wesad-wearable-stress-affect-detection-dataset/data
 
 Usage:
     python wesad_loader.py --wesad-path /path/to/WESAD
 
+Prerequisites:
+    Download and unzip WESAD to a local directory first. This script does NOT
+    auto-download the dataset.
+
 The script will:
-    1. Attempt to auto-download from Zenodo if no local copy found
-    2. Parse the .pkl files (one per subject)
-    3. Extract chest-sensor features per session (BPM, RMSSD, EDA, etc.)
-    4. Label sessions as: 'baseline' (neutral) or 'stress'
+    1. Walk the WESAD directory for S*/S*.pkl subject files
+    2. Run Pan-Tompkins R-peak detection on the chest ECG (512 Hz)
+    3. Compute sliding-window HRV features per 30 s window:
+         hr_bpm, rmssd, rr_std
+    4. Label each window as 'baseline' (neutral) or 'stress'
     5. Save processed data to wesad_processed.csv
 """
 
@@ -23,7 +28,6 @@ import argparse
 import pickle
 import numpy as np
 import scipy.signal as sp_signal
-from collections import deque
 
 
 # -------------------------------------------------------------------
@@ -43,73 +47,6 @@ def load_subject_pkl(pkl_path):
     return data
 
 
-def extract_chest_rr_intervals(chest):
-    """Extract clean RR intervals (ms) from WESAD chest sensor.
-
-    WESAD chest data keys:
-        'ECG'   — electrocardiogram (512 Hz)
-        'Resp'  — respiratory (512 Hz)
-    We use ECG R-peak detection to derive RR intervals.
-    """
-    ecg = chest["ECG"][:, 0]
-
-    # --- R-peak detection via Pan-Tompkins ---
-    # Bandpass filter 5–15 Hz
-    fs = 512
-    nyq = fs / 2
-    low, high = 5 / nyq, 15 / nyq
-    b, a = sp_signal.butter(3, [low, high], btype="band")
-    ecg_filt = sp_signal.filtfilt(b, a, ecg)
-
-    # Differentiate and square
-    diff = np.diff(ecg_filt)
-    squared = diff**2
-
-    # Moving average window ~150 ms
-    window = int(0.15 * fs)
-    ma = np.convolve(squared, np.ones(window) / window, mode="same")
-
-    # Find peaks
-    peaks, _ = sp_signal.find_peaks(ma, distance=int(0.3 * fs), height=np.percentile(ma, 60))
-
-    # Convert to ms
-    rr_ms = np.diff(peaks) / fs * 1000
-
-    # Filter physiologically impossible intervals
-    valid = (rr_ms >= RR_MIN_MS) & (rr_ms <= RR_MAX_MS)
-    rr_clean = rr_ms[valid]
-
-    # Smooth
-    if len(rr_clean) >= 3:
-        kernel = np.ones(3) / 3
-        rr_clean = np.convolve(rr_clean, kernel, mode="same")
-
-    return rr_clean
-
-
-def compute_hrv_features(rr_intervals):
-    """Compute HRV features from clean RR interval array."""
-    if len(rr_intervals) < 2:
-        return {
-            "hr_bpm": 0.0,
-            "rmssd": 0.0,
-            "hr_delta": 0.0,
-            "rr_std": 0.0,
-        }
-
-    hr_bpm = 60000 / np.mean(rr_intervals)
-    successive_diffs = np.diff(rr_intervals)
-    rmssd = np.sqrt(np.mean(successive_diffs**2))
-    rr_std = np.std(rr_intervals)
-
-    return {
-        "hr_bpm": float(hr_bpm),
-        "rmssd": float(rmssd),
-        "hr_delta": 0.0,  # per-window delta (populated across windows)
-        "rr_std": float(rr_std),
-    }
-
-
 def extract_session_features(data, window_sec=30, step_sec=15):
     """Sliding-window feature extraction over one session.
 
@@ -126,6 +63,9 @@ def extract_session_features(data, window_sec=30, step_sec=15):
         4 = meditation
         6/7 = not used
     We use: baseline=neutral, stress=stress
+
+    hr_delta: first-order difference in HR between consecutive windows
+              (positive = increasing arousal, negative = decreasing)
     """
     chest = data["signal"]["chest"]
     labels = data["label"].ravel()  # 1D array, at ~700 Hz
@@ -137,6 +77,7 @@ def extract_session_features(data, window_sec=30, step_sec=15):
     step_labels = step_sec * fs_label           # 10500 for 15s step
 
     records = []
+    prev_hr = None
     for start_lbl in range(0, len(labels) - winsize_labels, step_labels):
         # Dominant label in this window (mode)
         window_labels = labels[start_lbl : start_lbl + winsize_labels]
@@ -161,6 +102,13 @@ def extract_session_features(data, window_sec=30, step_sec=15):
         feat = compute_hrv_features_from_rr(rr_clean)
         if feat["hr_bpm"] == 0:
             continue
+
+        # Compute HR delta across consecutive windows
+        if prev_hr is not None:
+            feat["hr_delta"] = feat["hr_bpm"] - prev_hr
+        else:
+            feat["hr_delta"] = 0.0
+        prev_hr = feat["hr_bpm"]
 
         if lbl == 1:
             label = "baseline"
@@ -212,7 +160,7 @@ def _filter_rr_outliers(rr_intervals):
 def compute_hrv_features_from_rr(rr_intervals):
     """Compute HRV features from a clean RR interval array."""
     if len(rr_intervals) < 2:
-        return {"hr_bpm": 0.0, "rmssd": 0.0, "hr_delta": 0.0, "rr_std": 0.0}
+        return {"hr_bpm": 0.0, "rmssd": 0.0, "rr_std": 0.0}
 
     hr_bpm = 60000.0 / np.mean(rr_intervals)
     successive_diffs = np.diff(rr_intervals)
@@ -222,7 +170,6 @@ def compute_hrv_features_from_rr(rr_intervals):
     return {
         "hr_bpm": float(hr_bpm),
         "rmssd": float(rmssd),
-        "hr_delta": 0.0,  # per-window delta (set across consecutive windows)
         "rr_std": float(rr_std),
     }
 
@@ -279,7 +226,7 @@ def save_csv(records, output_path):
         print("  No records to save.")
         return
 
-    fieldnames = ["subject", "hr_bpm", "rmssd", "hr_delta", "rr_std", "label"]
+    fieldnames = ["subject", "hr_bpm", "rmssd", "rr_std", "hr_delta", "label"]
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -311,7 +258,7 @@ def main():
     if not os.path.exists(args.wesad_path):
         print(
             f"ERROR: WESAD directory not found: {args.wesad_path}\n"
-            "  1. Sign up at https://zenodo.org/records/被动1010249\n"
+            "  1. Download from https://www.kaggle.com/datasets/orvile/wesad-wearable-stress-affect-detection-dataset/data\n"
             "  2. Download WESAD.zip\n"
             "  3. Unzip to a directory and pass --wesad-path to this script"
         )

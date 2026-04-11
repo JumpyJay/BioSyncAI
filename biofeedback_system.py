@@ -177,20 +177,21 @@ class SignalProcessor:
 # =============================================================================
 
 # 9-Quadrant model: 3×3 grid indexed as
-#   row 0 = RMSSD Low,   row 1 = RMSSD Med,   row 2 = RMSSD High
+#   row 0 = RMSSD Low    (stress/anxiety zone)
+#   row 1 = RMSSD Med    (neutral/control zone)
+#   row 2 = RMSSD High   (relaxed/flow zone)
 #   col 0 = BPM Low,     col 1 = BPM Med,     col 2 = BPM High
 QUADRANT_NAMES = [
     # BPM Low              BPM Med               BPM High
-    ["boredom",            "worry",              "panic"],      # RMSSD Very Low
-    ["boredom",            "worry",              "anxiety"],    # RMSSD Low
-    ["relaxation",         "control",            "arousal"],    # RMSSD Med
-    ["relaxation",         "neutral",            "flow"],       # RMSSD High
+    ["boredom",           "worry",             "panic"],       # RMSSD < 30  — high arousal, low skill
+    ["control",           "neutral",           "anxiety"],     # RMSSD 30–65 — medium activation
+    ["relaxation",        "flow",              "arousal"],     # RMSSD > 65  — high skill, varying challenge
 ]
 
-# 3×3 BPM thresholds (Low / Med / High) — per-user calibratable
+# BPM thresholds (Low / Med / High) — per-user calibratable
 BPM_THRESHOLDS = (60, 80)
-# 3×3 RMSSD thresholds (ms) (Low / Med / High) — per-user calibratable
-RMSSD_THRESHOLDS = (20, 50)
+# RMSSD thresholds (ms) (Low / Med / High) — per-user calibratable
+RMSSD_THRESHOLDS = (30, 65)
 
 
 class CognitiveStateClassifier:
@@ -240,7 +241,11 @@ class CognitiveStateClassifier:
                 with open(self.wesad_path, "rb") as f:
                     data = pickle.load(f)
                     self.wesad_pipeline = data["pipeline"]
-                print(f"  ✓ WESAD SVM loaded (accuracy=67.1%)")
+                acc = data.get("test_accuracy")
+                if acc is not None:
+                    print(f"  ✓ WESAD SVM loaded (test accuracy={acc:.1%})")
+                else:
+                    print(f"  ✓ WESAD SVM loaded")
             except Exception as e:
                 print(f"  ⚠️  Could not load WESAD SVM: {e}")
                 self.wesad_pipeline = None
@@ -249,8 +254,6 @@ class CognitiveStateClassifier:
         """Predict using 3×3 grid (no SVM needed if not yet trained)."""
         bpm_lvl = self._bpm_level(hr_features['hr'])
         rmssd_lvl = self._rmssd_level(hr_features['rmssd'])
-        # Clamp to valid grid range
-        rmssd_lvl = max(0, min(2, rmssd_lvl))
         return QUADRANT_NAMES[rmssd_lvl][bpm_lvl]
 
     def prepare_features(self, hr_features):
@@ -263,13 +266,39 @@ class CognitiveStateClassifier:
         ]).reshape(1, -1)
 
     def predict(self, hr_features):
-        """Predict 9-quadrant cognitive state."""
-        if not self.trained:
-            return self.predict_from_thresholds(hr_features)
+        """Predict 9-quadrant cognitive state.
 
+        Priority:
+          1. User-trained SVM (after enough fine-tuning data collected)
+          2. WESAD SVM (pre-trained binary baseline/stress anchor)
+          3. Threshold grid (fallback for cold start)
+        """
         X = self.prepare_features(hr_features)
-        X_scaled = self.scaler.transform(X)
-        return self.svm.predict(X_scaled)[0]
+
+        if self.trained:
+            X_scaled = self.scaler.transform(X)
+            return self.svm.predict(X_scaled)[0]
+
+        # Use WESAD SVM as the primary predictor if available
+        if self.wesad_pipeline is not None:
+            wesad_label = int(self.wesad_pipeline.predict(X)[0])  # 0=baseline, 1=stress
+            quadrant = self.predict_from_thresholds(hr_features)
+
+            # WESAD "stress" biases toward negative-arousal quadrants;
+            # WESAD "baseline" biases toward positive/relaxed quadrants.
+            # Override the threshold-grid prediction when WESAD disagrees.
+            stress_quadrants = {"panic", "anxiety", "worry"}
+            relaxed_quadrants = {"relaxation", "flow", "control", "neutral"}
+
+            if wesad_label == 1 and quadrant not in stress_quadrants:
+                # WESAD says stress; if grid said relaxed, switch to anxiety
+                quadrant = "anxiety"
+            elif wesad_label == 0 and quadrant not in relaxed_quadrants:
+                # WESAD says baseline; if grid said stressed, switch to control
+                quadrant = "control"
+            return quadrant
+
+        return self.predict_from_thresholds(hr_features)
 
     def train_incrementally(self, hr_features, label):
         """Learn from new labeled data and retrain SVM on 9 quadrants."""
@@ -362,7 +391,6 @@ class RLMusicAgent:
             rmssd_lvl = 1
         else:
             rmssd_lvl = 2
-        rmssd_lvl = max(0, min(2, rmssd_lvl))
         return rmssd_lvl * 3 + bpm_lvl
 
     def _get_rmssd_variance(self):

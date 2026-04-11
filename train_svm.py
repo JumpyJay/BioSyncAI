@@ -57,8 +57,8 @@ def prepare_features(records):
             x = [
                 float(r["hr_bpm"]),
                 float(r["rmssd"]),
-                float(r["hr_delta"]),
                 float(r["rr_std"]),
+                float(r["hr_delta"]),
             ]
             X.append(x)
             y.append(r["label"])
@@ -90,21 +90,28 @@ def evaluate(pipeline, X_test, y_test, label_names):
     print(classification_report(y_test, y_pred, target_names=label_names))
 
     print("CONFUSION MATRIX")
-    cm = confusion_matrix(y_test, y_pred)
-    print(f"               Pred baseline  Pred stress")
-    print(f"Actual baseline     {cm[0][0]:4d}         {cm[0][1]:4d}")
-    print(f"Actual stress       {cm[1][0]:4d}         {cm[1][1]:4d}")
+    cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
+    print(f"{'':>15}", end="")
+    for name in label_names:
+        print(f"  Pred {name:>8}", end="")
+    print()
+    for i, name in enumerate(label_names):
+        print(f"Actual {name:>8}", end="")
+        for j in range(len(label_names)):
+            print(f"  {cm[i][j]:>10d}", end="")
+        print()
 
     accuracy = (y_pred == y_test).mean()
     print(f"\nOverall accuracy: {accuracy:.1%}")
 
 
-def save_model(pipeline, output_path="svm_wesad.pkl"):
+def save_model(pipeline, accuracy=None, output_path="svm_wesad.pkl"):
     """Save trained pipeline (scaler + SVM) to disk."""
     with open(output_path, "wb") as f:
         pickle.dump({
             "pipeline": pipeline,
             "label_encoder": LABEL_ENCODER,
+            "test_accuracy": accuracy,
         }, f)
     print(f"\n✓ Model saved to {output_path}")
 
@@ -171,8 +178,9 @@ def main():
     print("\nTraining final SVM (RBF kernel)...")
     pipeline = train_svm(X_train, y_train, kernel="rbf")
 
+    accuracy = (pipeline.predict(X_test) == y_test).mean()
     evaluate(pipeline, X_test, y_test, label_names)
-    save_model(pipeline, args.output)
+    save_model(pipeline, accuracy=accuracy, output_path=args.output)
 
     print("\n✓ Training complete!")
     print("  Next: load svm_wesad.pkl in biofeedback_system.py for pre-trained inference")
