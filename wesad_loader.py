@@ -140,7 +140,8 @@ def extract_session_features(data, window_sec=30, step_sec=15):
     for start_lbl in range(0, len(labels) - winsize_labels, step_labels):
         # Dominant label in this window (mode)
         window_labels = labels[start_lbl : start_lbl + winsize_labels]
-        lbl = int(np.median(window_labels))
+        values, counts = np.unique(window_labels, return_counts=True)
+        lbl = int(values[np.argmax(counts)])
 
         if lbl == 0:
             continue  # skip undefined
