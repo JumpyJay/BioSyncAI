@@ -70,7 +70,7 @@ class SignalProcessor:
         self.sample_rate = sample_rate
         self.calibration_window_sec = calibration_window_sec
         self.personalized_baseline_rmssd = None
-        self.baseline_rmssd_window = deque(maxlen=calibration_window_sec * sample_rate // 1000)
+        self.baseline_rmssd_window = deque(maxlen=calibration_window_sec * sample_rate)
         self.hr_history = deque(maxlen=30)  # rolling HR for delta computation
         self.is_calibrated = False
 
