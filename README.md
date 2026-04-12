@@ -33,9 +33,34 @@
 ## 🚀 Getting Started
 
 ### Prerequisites
-* Raspberry Pi (with Python 3.x)
-* Pulse Sensor (Analog/Digital)
-* ADC (e.g., MCP3008) if using analog sensor
+* Arduino Uno R3 (for real sensor input)
+* Pulse Sensor (Analog, e.g., PulseSensor.com heartbeat sensor)
+* USB cable for Arduino connection
+* Python 3.10+
+
+### Arduino Setup
+1. **Wire the pulse sensor to Arduino:**
+   * `SIGNAL` pin → `A0` (Analog pin 0)
+   * `VCC` pin → `5V`
+   * `GND` pin → `GND`
+
+2. **Upload the Arduino sketch** (save as `pulse_sensor.ino`):
+   ```cpp
+   const int PULSE_PIN = A0;
+   void setup() {
+     Serial.begin(9600);
+   }
+   void loop() {
+     int val = analogRead(PULSE_PIN);
+     Serial.println(val);  // outputs 0-1023
+     delay(10);  // ~100 Hz sampling
+   }
+   ```
+
+3. **Find the Arduino serial port:**
+   * macOS: `/dev/cu.usbmodem1411` (or similar in `/dev/cu.*`)
+   * Linux: `/dev/ttyUSB0`
+   * Windows: `COM3`
 
 ### Python Version
 This project requires **Python 3.10 or 3.11** (recommended).
@@ -79,6 +104,7 @@ python --version
 2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
+   pip install pyserial  # Required for Arduino communication
    ```
 
 ### Running the Code
@@ -87,29 +113,33 @@ python --version
 # Activate venv first (if not already activated)
 source venv/bin/activate
 
-# Run the biofeedback system
+# Simulated sensor mode (default - no hardware needed)
 python biofeedback_system.py
+
+# Arduino sensor mode (real hardware)
+python biofeedback_system.py --sensor arduino
+python biofeedback_system.py --sensor arduino --port /dev/cu.usbmodem1411
 ```
 
-### Hardware Setup (Optional)
-For real hardware integration:
-- Wire MCP3008 ADC to Raspberry Pi SPI pins
-- Connect pulse sensor to ADC channel 0
-- Install `spidev` for ADC communication
+### Hardware Setup
+Wire the pulse sensor to Arduino as described above. The system communicates
+directly with the Arduino over USB serial — no external ADC needed.
 
 ### Project Structure
 ```
 BioSyncAI/
-├── biofeedback_system.py   # Main system code
+├── biofeedback_system.py   # Main system (supports simulated or Arduino sensor)
 ├── requirements.txt        # Python dependencies
 ├── README.md              # This file
-└── .gitignore            # Git ignore rules
+├── .gitignore            # Git ignore rules
+└── pulse_sensor.ino     # Arduino sketch for pulse sensor
 ```
 
 ### Dependencies
 - `numpy` - Numerical computing
 - `scikit-learn` - SVM implementation
 - `scipy` - Signal processing
+- `pyserial` - Arduino USB serial communication
 
 ### Implementation Notes
 * [cite_start]**Edge Cases:** The system includes personalized calibration to handle baseline distributions and avoid misclassifying pathological irregularities like arrhythmia[cite: 84, 85].
