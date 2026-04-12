@@ -1,6 +1,6 @@
-# PulseFlow AI: Closed-Loop Biofeedback for Flow State Maintenance
+# BioSyncAI: Closed-Loop Biofeedback for Flow State Maintenance
 
-[cite_start]PulseFlow AI is a real-time system designed to combat the "Fragmented Attention" and "Dopamine Disparity" caused by modern social media algorithms[cite: 10, 13]. [cite_start]By utilizing heart rate variability (HRV) as a proxy for the Central Autonomic Network (CAN), the system detects cognitive states and uses generative music as a regulatory tool to guide users into an optimal "Flow State"[cite: 19, 41].
+[cite_start]BioSync AI is a real-time system designed to combat the "Fragmented Attention" and "Dopamine Disparity" caused by modern social media algorithms[cite: 10, 13]. [cite_start]By utilizing heart rate variability (HRV) as a proxy for the Central Autonomic Network (CAN), the system detects cognitive states and uses generative music as a regulatory tool to guide users into an optimal "Flow State"[cite: 19, 41].
 
 ## 🧠 Project Overview
 [cite_start]The core objective of this project is to answer: *Can a real-time AI system use physiological biomarkers to detect and regulate a user's cognitive state?*[cite: 19]. [cite_start]Rather than treating music as static background noise, this system treats it as a dynamic, closed-loop biofeedback signal[cite: 20].
