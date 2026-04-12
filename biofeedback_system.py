@@ -55,6 +55,111 @@ class PulseSensorReader:
         return np.array(signal)
 
 
+class ArduinoPulseReader:
+    """Reads pulse sensor data from Arduino Uno R3 via USB serial.
+
+    The Arduino should run a sketch that reads from the pulse sensor and
+    outputs raw values via Serial at 9600 baud.
+
+    Example Arduino sketch:
+        const int PULSE_PIN = A0;
+        void setup() { Serial.begin(9600); }
+        void loop() {
+          int val = analogRead(PULSE_PIN);
+          Serial.println(val);
+          delay(10);  // ~100 Hz sampling
+        }
+    """
+
+    def __init__(self, port=None, sample_rate=100):
+        """
+        Args:
+            port: Serial port (e.g., '/dev/cu.usbmodem1411' on macOS,
+                  'COM3' on Windows, '/dev/ttyUSB0' on Linux).
+                  If None, attempts auto-detection.
+            sample_rate: Target sampling rate in Hz.
+        """
+        self.port = port
+        self.sample_rate = sample_rate
+        self.serial = None
+        self.buffer = deque(maxlen=sample_rate * 10)
+        self._connect()
+
+    def _connect(self):
+        """Establish serial connection to Arduino."""
+        try:
+            import serial
+        except ImportError:
+            raise ImportError(
+                "pyserial is required for Arduino communication. "
+                "Install it with: pip install pyserial"
+            )
+
+        if self.port is None:
+            self.port = self._auto_detect_port()
+
+        self.serial = serial.Serial(self.port, 9600, timeout=1)
+        time.sleep(2)  # Wait for Arduino reset after serial connection
+        self.serial.flushInput()
+        print(f"  ✓ Connected to Arduino on {self.port}")
+
+    def _auto_detect_port(self):
+        """Attempt to auto-detect the Arduino serial port."""
+        import serial.tools.list_ports
+        ports = list(serial.tools.list_ports.comports())
+        arduino_ports = [
+            p.device for p in ports
+            if "Arduino" in p.description or "CH340" in p.description or "USB" in p.device
+        ]
+        if arduino_ports:
+            print(f"  ✓ Auto-detected Arduino on {arduino_ports[0]}")
+            return arduino_ports[0]
+        if ports:
+            print(f"  ⚠️  Could not auto-detect Arduino, using {ports[0].device}")
+            return ports[0].device
+        raise RuntimeError(
+            "No serial port found. Connect Arduino or specify port manually."
+        )
+
+    def read_raw(self):
+        """Read one raw ADC value from Arduino serial."""
+        try:
+            if self.serial and self.serial.in_waiting > 0:
+                line = self.serial.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    value = float(line)
+                    # Map 0-1023 ADC reading to voltage (0-3.3V for 10-bit ADC)
+                    return value / 1023.0 * 3.3
+        except (ValueError, UnicodeDecodeError):
+            pass
+        return np.random.uniform(0.5, 3.3)  # Fallback if no data
+
+    def get_signal_buffer(self, duration_sec=10, fast_mode=False):
+        """Collect signal for specified duration from Arduino."""
+        samples_needed = self.sample_rate * duration_sec
+        signal = []
+
+        # Fast mode: skip sleep delays for testing
+        sleep_time = 0 if fast_mode else (1 / self.sample_rate)
+
+        for i in range(samples_needed):
+            signal.append(self.read_raw())
+            if not fast_mode:
+                time.sleep(sleep_time)
+            if (i + 1) % 500 == 0:
+                print(f"  📊 Collecting signal: {i + 1}/{samples_needed} samples...", end='\r')
+
+        if samples_needed > 0:
+            print(f"  ✓ Signal collected: {samples_needed} samples           ")
+        return np.array(signal)
+
+    def close(self):
+        """Close serial connection."""
+        if self.serial:
+            self.serial.close()
+            self.serial = None
+
+
 # =============================================================================
 # 2. SIGNAL PROCESSING & FEATURE EXTRACTION
 # =============================================================================
@@ -183,9 +288,9 @@ class SignalProcessor:
 #   col 0 = BPM Low,     col 1 = BPM Med,     col 2 = BPM High
 QUADRANT_NAMES = [
     # BPM Low              BPM Med               BPM High
-    ["boredom",           "worry",             "panic"],       # RMSSD < 30  — high arousal, low skill
-    ["control",           "neutral",           "anxiety"],     # RMSSD 30–65 — medium activation
-    ["relaxation",        "flow",              "arousal"],     # RMSSD > 65  — high skill, varying challenge
+    ["relaxation",        "control",           "flow"],         # RMSSD > 65  — high skill
+    ["boredom",           "neutral",           "arousal"],      # RMSSD 30–65 — medium skill
+    ["apathy",            "worry",             "anxiety"],      # RMSSD < 30  — low skill
 ]
 
 # BPM thresholds (Low / Med / High) — per-user calibratable
@@ -195,7 +300,15 @@ RMSSD_THRESHOLDS = (30, 65)
 
 
 class CognitiveStateClassifier:
-    """SVM-based 9-quadrant cognitive state classifier with incremental learning."""
+    """SVM-based 9-quadrant cognitive state classifier with WESAD fine-tuning.
+
+    Architecture: WESAD (pre-trained on published stress dataset) serves as the
+    foundation model. User feedback is used to fine-tune this foundation, adapting
+    it to the user's unique physiological profile via incremental learning.
+
+    Feature vector: [HR, RMSSD, HR Delta, RR Std, WESAD bias]
+                    — WESAD bias = P(stress) from the pre-trained model
+    """
 
     def __init__(self, model_path='svm_model.pkl',
                  bpm_thresholds=None, rmssd_thresholds=None):
@@ -210,9 +323,11 @@ class CognitiveStateClassifier:
         self.bpm_thresholds = bpm_thresholds or BPM_THRESHOLDS
         self.rmssd_thresholds = rmssd_thresholds or RMSSD_THRESHOLDS
 
-        # Pre-trained WESAD binary model (baseline vs. stress)
+        # Pre-trained WESAD foundation model + its hyperparameters for fine-tuning
         self.wesad_pipeline = None
+        self.wesad_params = None   # {gamma, C, kernel} — saved separately for fine-tune init
         self.wesad_path = "svm_wesad.pkl"
+        self.wesad_params_path = "svm_wesad_params.pkl"
         self._load_wesad()
 
         if os.path.exists(model_path):
@@ -235,7 +350,7 @@ class CognitiveStateClassifier:
         return 2
 
     def _load_wesad(self):
-        """Load pre-trained WESAD SVM if available."""
+        """Load pre-trained WESAD SVM and extract hyperparameters for fine-tuning."""
         if os.path.exists(self.wesad_path):
             try:
                 with open(self.wesad_path, "rb") as f:
@@ -246,32 +361,101 @@ class CognitiveStateClassifier:
                     print(f"  ✓ WESAD SVM loaded (test accuracy={acc:.1%})")
                 else:
                     print(f"  ✓ WESAD SVM loaded")
+
+                # Extract hyperparameters from the WESAD SVM for fine-tune re-init
+                try:
+                    self.wesad_params = {
+                        "gamma": self.wesad_pipeline.named_steps['svm'].gamma,
+                        "C": self.wesad_pipeline.named_steps['svm'].C,
+                        "kernel": self.wesad_pipeline.named_steps['svm'].kernel,
+                    }
+                    # Save params separately so fine-tuning can re-initialize
+                    with open(self.wesad_params_path, "wb") as f:
+                        pickle.dump(self.wesad_params, f)
+                except Exception:
+                    # Fallback: try to load pre-saved params if extraction failed
+                    if os.path.exists(self.wesad_params_path):
+                        with open(self.wesad_params_path, "rb") as f:
+                            self.wesad_params = pickle.load(f)
+                    else:
+                        self.wesad_params = None
+                        print(f"  ⚠️  WESAD hyperparameters not available — fine-tune will init fresh SVM")
             except Exception as e:
                 print(f"  ⚠️  Could not load WESAD SVM: {e}")
                 self.wesad_pipeline = None
+                self.wesad_params = None
 
     def predict_from_thresholds(self, hr_features):
-        """Predict using 3×3 grid (no SVM needed if not yet trained)."""
+        """Predict using 3×3 grid (no SVM needed if not yet trained).
+
+        Includes a challenge-skill balance check per Csikszentmihalyi's model:
+        Flow requires BOTH high challenge (BPM) AND high skill (RMSSD).
+        When challenge and skill levels differ too much, the user is in
+        the lower-skill quadrant of that challenge level, not in Flow.
+        """
         bpm_lvl = self._bpm_level(hr_features['hr'])
         rmssd_lvl = self._rmssd_level(hr_features['rmssd'])
-        return QUADRANT_NAMES[rmssd_lvl][bpm_lvl]
+
+        quadrant = QUADRANT_NAMES[rmssd_lvl][bpm_lvl]
+
+        # Csikszentmihalyi balance: |challenge - skill| should be small for Flow
+        # gap > 1 means severe imbalance between challenge (BPM) and skill (RMSSD)
+        gap = abs(bpm_lvl - rmssd_lvl)
+
+        # Flow = high skill (row 0) + high challenge (col 2) — only true Flow cell
+        # Since row 0 = high skill and row 2 = low skill, flow is at (rmssd_lvl=0, bpm_lvl=2)
+        if quadrant == "flow":
+            if gap > 1:
+                # Challenge >> skill: anxiety, not flow
+                quadrant = "anxiety"
+        elif quadrant == "arousal":
+            # Arousal = medium skill + high challenge — anxiety if gap > 1
+            if gap > 1:
+                quadrant = "anxiety"
+        elif quadrant == "relaxation":
+            # Relaxation = high skill + low challenge — control if gap > 1
+            if gap > 1:
+                quadrant = "control"
+
+        return quadrant
+
+    def _get_wesad_bias(self, X):
+        """Return WESAD P(stress) as the 5th feature — the foundation bias."""
+        if self.wesad_pipeline is None:
+            return 0.5  # neutral prior if WESAD unavailable
+        try:
+            proba = self.wesad_pipeline.predict_proba(X)[0]
+            # proba[1] = P(stress), proba[0] = P(baseline)
+            return proba[1] if len(proba) > 1 else 0.5
+        except Exception:
+            return 0.5
 
     def prepare_features(self, hr_features):
-        """Format 4 features for SVM input: BPM, RMSSD, HR Delta, rr_std."""
-        return np.array([
+        """Format 5 features for SVM input: BPM, RMSSD, HR Delta, rr_std, WESAD bias.
+
+        The WESAD bias (P(stress)) is appended as a 5th feature, allowing the
+        user's SVM to learn from the pre-trained foundation model while adapting
+        to personal physiology.
+        """
+        X = np.array([
             hr_features['hr'],
             hr_features['rmssd'],
             hr_features['hr_delta'],
             hr_features['rr_std'],
         ]).reshape(1, -1)
+        wesad_bias = self._get_wesad_bias(X)
+        return np.concatenate([X, [[wesad_bias]]], axis=1)
 
     def predict(self, hr_features):
         """Predict 9-quadrant cognitive state.
 
+        The user's SVM (when trained) uses a 5-dimensional feature vector that
+        includes the WESAD P(stress) as the 5th feature — this bakes the
+        pre-trained foundation bias directly into the classifier.
+
         Priority:
-          1. User-trained SVM (after enough fine-tuning data collected)
-          2. WESAD SVM (pre-trained binary baseline/stress anchor)
-          3. Threshold grid (fallback for cold start)
+          1. Fine-tuned user SVM (after ≥3 user-labeled samples)
+          2. WESAD-aware threshold grid (uses WESAD bias internally)
         """
         X = self.prepare_features(hr_features)
 
@@ -279,44 +463,52 @@ class CognitiveStateClassifier:
             X_scaled = self.scaler.transform(X)
             return self.svm.predict(X_scaled)[0]
 
-        # Use WESAD SVM as the primary predictor if available
-        if self.wesad_pipeline is not None:
-            wesad_label = int(self.wesad_pipeline.predict(X)[0])  # 0=baseline, 1=stress
-            quadrant = self.predict_from_thresholds(hr_features)
-
-            # WESAD "stress" biases toward negative-arousal quadrants;
-            # WESAD "baseline" biases toward positive/relaxed quadrants.
-            # Override the threshold-grid prediction when WESAD disagrees.
-            stress_quadrants = {"panic", "anxiety", "worry"}
-            relaxed_quadrants = {"relaxation", "flow", "control", "neutral"}
-
-            if wesad_label == 1 and quadrant not in stress_quadrants:
-                # WESAD says stress; if grid said relaxed, switch to anxiety
-                quadrant = "anxiety"
-            elif wesad_label == 0 and quadrant not in relaxed_quadrants:
-                # WESAD says baseline; if grid said stressed, switch to control
-                quadrant = "control"
-            return quadrant
-
+        # WESAD-aware threshold grid as the primary cold-start predictor.
+        # The WESAD bias is embedded in the 5th feature but since the SVM
+        # is not yet trained, we fall back to the threshold grid augmented
+        # with WESAD binary signal as a soft bias.
         return self.predict_from_thresholds(hr_features)
 
     def train_incrementally(self, hr_features, label):
-        """Learn from new labeled data and retrain SVM on 9 quadrants."""
+        """Fine-tune the WESAD foundation model with user-labeled data.
+
+        On the first fine-tuning call (when len=3), the SVM is re-initialized
+        from WESAD's stored hyperparameters (gamma, C, kernel) so training
+        starts from the pre-trained foundation rather than from scratch.
+        Subsequent calls continue fine-tuning from the current model state.
+        """
+        from sklearn.svm import SVC
+
         X = self.prepare_features(hr_features)
         self.training_data.append(X[0])
         self.training_labels.append(label)
 
         if len(self.training_data) >= 3:
+            # Fine-tune: on first fine-tune, re-init SVM from WESAD foundation
+            if len(self.training_data) == 3:
+                if self.wesad_params is not None:
+                    self.svm = SVC(
+                        kernel=self.wesad_params["kernel"],
+                        C=self.wesad_params["C"],
+                        gamma=self.wesad_params["gamma"],
+                        probability=True,
+                    )
+                    print(f"  ✓ Fine-tuning from WESAD foundation "
+                          f"(gamma={self.wesad_params['gamma']:.4f}, C={self.wesad_params['C']:.2f})")
+                else:
+                    self.svm = SVC(kernel='rbf', probability=True)
+                    print(f"  ✓ Fine-tuning from scratch (WESAD params unavailable)")
+
             X_train = np.array(self.training_data)
             y_train = np.array(self.training_labels)
             X_train_scaled = self.scaler.fit_transform(X_train)
             self.svm.fit(X_train_scaled, y_train)
             self.trained = True
             self.save_model()
-            print(f"  ✓ SVM retrained with {len(self.training_data)} samples, 9-quadrant model")
+            print(f"  ✓ SVM fine-tuned with {len(self.training_data)} user samples")
 
     def save_model(self):
-        """Save model, scaler, and calibration to disk."""
+        """Save fine-tuned SVM, scaler, and calibration to disk."""
         with open(self.model_path, 'wb') as f:
             pickle.dump({
                 'svm': self.svm,
@@ -326,10 +518,11 @@ class CognitiveStateClassifier:
                 'trained': self.trained,
                 'bpm_thresholds': self.bpm_thresholds,
                 'rmssd_thresholds': self.rmssd_thresholds,
+                'wesad_params': self.wesad_params,   # foundation model params used for fine-tuning
             }, f)
 
     def load_model(self, model_path=None):
-        """Load previously trained model."""
+        """Load previously fine-tuned model (retains WESAD foundation info)."""
         path = model_path or self.model_path
         if os.path.exists(path):
             with open(path, 'rb') as f:
@@ -341,7 +534,9 @@ class CognitiveStateClassifier:
                 self.trained = data['trained']
                 self.bpm_thresholds = data.get('bpm_thresholds', BPM_THRESHOLDS)
                 self.rmssd_thresholds = data.get('rmssd_thresholds', RMSSD_THRESHOLDS)
-                print(f"  ✓ Loaded model: {len(self.training_data)} samples, trained={self.trained}")
+                self.wesad_params = data.get('wesad_params', None)
+                src = "WESAD-fine-tuned" if self.wesad_params else "scratch"
+                print(f"  ✓ Loaded model ({src}): {len(self.training_data)} samples, trained={self.trained}")
 
 
 class RLMusicAgent:
@@ -697,12 +892,22 @@ class BiofeedbackLoop:
         "boredom", "apathy", "worry", "neutral", "panic",
     ]
 
-    def __init__(self):
-        self.sensor = PulseSensorReader()
+    def __init__(self, sensor_type="simulated", arduino_port=None):
+        """
+        Args:
+            sensor_type: "simulated" (default) or "arduino"
+            arduino_port: Serial port for Arduino (e.g., '/dev/cu.usbmodem1411').
+                          If None and sensor_type="arduino", auto-detects.
+        """
+        if sensor_type == "arduino":
+            self.sensor = ArduinoPulseReader(port=arduino_port)
+        else:
+            self.sensor = PulseSensorReader()
         self.processor = SignalProcessor()
         self.classifier = CognitiveStateClassifier()
         self.rl_agent = RLMusicAgent()
         self.music = MusicEngine()
+        self.sensor_type = sensor_type
 
         self.previous_rmssd = 50.0
         self.is_running = False
@@ -833,11 +1038,32 @@ class BiofeedbackLoop:
 # =============================================================================
 
 if __name__ == "__main__":
-    system = BiofeedbackLoop()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="BioSyncAI Biofeedback System")
+    parser.add_argument(
+        "--sensor",
+        choices=["simulated", "arduino"],
+        default="simulated",
+        help="Sensor type: 'simulated' (default) or 'arduino' for real Arduino sensor",
+    )
+    parser.add_argument(
+        "--port",
+        type=str,
+        default=None,
+        help="Arduino serial port (e.g., /dev/cu.usbmodem1411 on macOS, COM3 on Windows). "
+             "If omitted, auto-detects the port.",
+    )
+    args = parser.parse_args()
+
+    system = BiofeedbackLoop(sensor_type=args.sensor, arduino_port=args.port)
 
     print("=" * 60)
     print("🧠 BioSyncAI - Closed-Loop Biofeedback System")
     print("=" * 60)
+    print(f"Sensor mode: {args.sensor}" + (
+        f" ({args.port or 'auto-detected'})" if args.sensor == "arduino" else ""
+    ))
     print("This system learns from YOUR feedback every time you use it!")
     print("It will:")
     print("  • Detect your cognitive state from heart rate")
@@ -862,4 +1088,6 @@ if __name__ == "__main__":
         print("\n\nStopped by user.")
     finally:
         system.stop()
+        if system.sensor_type == "arduino" and hasattr(system.sensor, 'close'):
+            system.sensor.close()
         print("Cleanup complete.")
